@@ -1,0 +1,162 @@
+From 3d4633f25c1db62dc235bf44ba785700ec0e0476 Mon Sep 17 00:00:00 2001
+From: Florent CHAUVEAU <florentch@pm.me>
+Date: Fri, 28 Feb 2025 08:47:18 +0100
+Subject: [PATCH] audiosocket: added support for DTMF frames
+
+Updated the AudioSocket protocol to allow sending DTMF frames.
+AST_FRAME_DTMF frames are now forwarded to the server, in addition to
+AST_FRAME_AUDIO frames. A new payload type AST_AUDIOSOCKET_KIND_DTMF
+with value 0x03 was added to the protocol. The payload is a 1-byte
+ascii representing the DTMF digit (0-9,*,#...).
+
+UserNote: The AudioSocket protocol now forwards DTMF frames with
+payload type 0x03. The payload is a 1-byte ascii representing the DTMF
+digit (0-9,*,#...).
+---
+ apps/app_audiosocket.c             |  4 +--
+ channels/chan_audiosocket.c        | 28 +++++++++++++++++++++
+ include/asterisk/res_audiosocket.h |  3 +++
+ res/res_audiosocket.c              | 39 ++++++++++++++++++++++--------
+ 4 files changed, 62 insertions(+), 12 deletions(-)
+
+diff --git a/apps/app_audiosocket.c b/apps/app_audiosocket.c
+index 7c8054f31f2..ac054f81a45 100644
+--- a/apps/app_audiosocket.c
++++ b/apps/app_audiosocket.c
+@@ -64,7 +64,7 @@
+ 			</parameter>
+ 		</syntax>
+ 		<description>
+-			<para>Connects to the given TCP server, then transmits channel audio as 16-bit, 8KHz mono PCM over that socket (other codecs available via the channel driver interface). In turn, PCM audio is received from the socket and sent to the channel.  Only audio frames will be transmitted.</para>
++			<para>Connects to the given TCP server, then transmits channel audio as 16-bit, 8KHz mono PCM over that socket (other codecs available via the channel driver interface). In turn, PCM audio is received from the socket and sent to the channel.  Only audio frames and DTMF frames will be transmitted.</para>
+ 			<para>Protocol is specified at https://wiki.asterisk.org/wiki/display/AST/AudioSocket</para>
+ 			<para>This application does not automatically answer and should generally be preceeded by an application such as Answer() or Progress().</para>
+ 		</description>
+@@ -187,7 +187,7 @@ static int audiosocket_run(struct ast_channel *chan, const char *id, int svc, co
+ 				return -1;
+ 			}
+ 
+-			if (f->frametype == AST_FRAME_VOICE) {
++			if (f->frametype == AST_FRAME_VOICE || f->frametype == AST_FRAME_DTMF) {
+ 				/* Send audio frame to audiosocket */
+ 				if (ast_audiosocket_send_frame(svc, f)) {
+ 					ast_log(LOG_WARNING, "Failed to forward frame from channel '%s' to AudioSocket server '%s'\n",
+diff --git a/channels/chan_audiosocket.c b/channels/chan_audiosocket.c
+index 996eb086211..9b2027fe5c1 100644
+--- a/channels/chan_audiosocket.c
++++ b/channels/chan_audiosocket.c
+@@ -59,6 +59,7 @@ static int audiosocket_call(struct ast_channel *ast, const char *dest, int timeo
+ static int audiosocket_hangup(struct ast_channel *ast);
+ static struct ast_frame *audiosocket_read(struct ast_channel *ast);
+ static int audiosocket_write(struct ast_channel *ast, struct ast_frame *f);
++static int audiosocket_send_dtmf(struct ast_channel *ast, char digit, unsigned int duration);
+ 
+ /* AudioSocket channel driver declaration */
+ static struct ast_channel_tech audiosocket_channel_tech = {
+@@ -69,6 +70,7 @@ static struct ast_channel_tech audiosocket_channel_tech = {
+ 	.hangup = audiosocket_hangup,
+ 	.read = audiosocket_read,
+ 	.write = audiosocket_write,
++	.send_digit_end = audiosocket_send_dtmf,
+ };
+ 
+ /*! \brief Function called when we should read a frame from the channel */
+@@ -116,6 +118,32 @@ static int audiosocket_write(struct ast_channel *ast, struct ast_frame *f)
+ 	return 0;
+ }
+ 
++/*! \brief Function called when we should write a DTMF frame to the channel */
++static int audiosocket_send_dtmf(struct ast_channel *ast, char digit, unsigned int duration)
++{
++	struct audiosocket_instance *instance;
++	struct ast_channel *bridgedChan;
++	struct ast_frame f;
++
++	/* The channel should always be present from the API */
++	instance = ast_channel_tech_pvt(ast);
++	if (instance == NULL || instance->svc < 1) {
++		return -1;
++	}
++
++	f.frametype = AST_FRAME_DTMF;
++	f.subclass.integer = digit;
++	f.len = duration;
++
++	if (ast_audiosocket_send_frame(instance->svc, &f)) {
++		bridgedChan = ast_channel_bridge_peer(ast);
++		ast_log(LOG_ERROR, "Failed to forward DTMF frame from channel '%s' to AudioSocket server '%s'\n",
++				bridgedChan ? ast_channel_name(bridgedChan) : "Unknown", instance->server);
++		return -1;
++	}
++	return 0;
++}
++
+ /*! \brief Function called when we should actually call the destination */
+ static int audiosocket_call(struct ast_channel *ast, const char *dest, int timeout)
+ {
+diff --git a/include/asterisk/res_audiosocket.h b/include/asterisk/res_audiosocket.h
+index e1aea029ecc..588e2d96565 100644
+--- a/include/asterisk/res_audiosocket.h
++++ b/include/asterisk/res_audiosocket.h
+@@ -44,6 +44,9 @@ enum ast_audiosocket_msg_kind {
+ 	/*! \brief Message contains the connection's UUID, direction: Received only. */
+ 	AST_AUDIOSOCKET_KIND_UUID   = 0x01,
+ 
++	/*! \brief Message contains a DTMF digit, direction: Received only. */
++	AST_AUDIOSOCKET_KIND_DTMF   = 0x03,
++
+ 	/*! \brief Messages contains audio data, direction: Sent and received. */
+ 	AST_AUDIOSOCKET_KIND_AUDIO  = 0x10,
+ 
+diff --git a/res/res_audiosocket.c b/res/res_audiosocket.c
+index 881c20eee52..58afb5e63f4 100644
+--- a/res/res_audiosocket.c
++++ b/res/res_audiosocket.c
+@@ -209,18 +209,37 @@ const int ast_audiosocket_init(const int svc, const char *id)
+ 
+ const int ast_audiosocket_send_frame(const int svc, const struct ast_frame *f)
+ {
+-	uint8_t buf[3 + f->datalen];
+-	uint16_t *length = (uint16_t *) &buf[1];
++	int datalen = f->datalen;
++	if (f->frametype == AST_FRAME_DTMF) {
++		datalen = 1;
++	}
+ 
+-	/* Audio format is 16-bit, 8kHz signed linear mono for dialplan app,
+-           depends on agreed upon audio codec for channel driver interface. */
+-	buf[0] = AST_AUDIOSOCKET_KIND_AUDIO;
+-	*length = htons(f->datalen);
+-	memcpy(&buf[3], f->data.ptr, f->datalen);
++	{
++		uint8_t buf[3 + datalen];
++		uint16_t *length = (uint16_t *) &buf[1];
++
++		/* Audio format is 16-bit, 8kHz signed linear mono for dialplan app,
++			depends on agreed upon audio codec for channel driver interface. */
++		switch (f->frametype) {
++			case AST_FRAME_VOICE:
++				buf[0] = AST_AUDIOSOCKET_KIND_AUDIO;
++				*length = htons(datalen);
++				memcpy(&buf[3], f->data.ptr, datalen);
++				break;
++			case AST_FRAME_DTMF:
++				buf[0] = AST_AUDIOSOCKET_KIND_DTMF;
++				buf[3] = (uint8_t) f->subclass.integer;
++				*length = htons(1);
++				break;
++			default:
++				ast_log(LOG_ERROR, "Unsupported frame type %d for AudioSocket\n", f->frametype);
++				return -1;
++		}
+ 
+-	if (write(svc, buf, 3 + f->datalen) != 3 + f->datalen) {
+-		ast_log(LOG_WARNING, "Failed to write data to AudioSocket because: %s\n", strerror(errno));
+-		return -1;
++		if (write(svc, buf, 3 + datalen) != 3 + datalen) {
++			ast_log(LOG_WARNING, "Failed to write data to AudioSocket because: %s\n", strerror(errno));
++			return -1;
++		}
+ 	}
+ 
+ 	return 0;

@@ -1,0 +1,78 @@
+# ElevenLabs AI Call App - Project Intelligence
+
+## Project Structure
+- The project is a Node.js application using CommonJS modules (`.cjs` files)
+- Core components are separated into individual files with clear responsibilities
+- The application integrates with Asterisk via AudioSocket protocol and AMI
+- The application connects to ElevenLabs API for conversational AI
+
+## Critical Implementation Paths
+1. **Call Flow**: 
+   - Asterisk routes call to AudioSocket
+   - StreamService processes audio packets
+   - PortManager manages connections
+   - Audio is streamed to/from ElevenLabs API
+
+2. **Connection Management**:
+   - ConnectionManager tracks WebSocket connections
+   - PortManager allocates ports for AudioSocket servers
+   - Resources are cleaned up when calls end
+
+3. **Error Handling**:
+   - Each component has its own error handling
+   - Errors are logged and reported to clients via WebSocket
+   - Resource cleanup is critical on error conditions
+
+## User Preferences
+- Integration with OSdial/Vicidial is a priority
+- AI agents should appear as remote/virtual agents in OSdial
+- Fully automated calls are the primary use case
+- Both inbound and outbound calls should be supported
+
+## Project-Specific Patterns
+- **Event-Driven Architecture**: Components communicate via events
+- **Factory Pattern**: Used for creating StreamService instances
+- **Singleton Pattern**: Used for ConnectionManager and PortManager
+- **Dynamic Port Allocation**: For handling multiple concurrent calls
+
+## Known Challenges
+1. **OSdial Integration**: Requires custom dialplan and agent configuration
+2. **Port Exhaustion**: Limited number of concurrent calls based on port range
+3. **Error Recovery**: Some error scenarios may lead to resource leaks
+4. **Latency**: Audio processing introduces some conversation latency
+
+## Evolution of Project Decisions
+- Originally designed for direct Asterisk integration
+- Now focusing on OSdial/Vicidial integration as virtual/remote agents
+- Moving toward a more modular architecture for easier maintenance
+- Improving error handling and resource management
+
+## Tool Usage Patterns
+- Node.js for server-side application
+- WebSockets for real-time communication
+- Asterisk AudioSocket for audio streaming
+- ElevenLabs API for conversational AI
+- Environment variables for configuration
+
+## File Naming Conventions
+- All core files use `.cjs` extension (CommonJS modules)
+- Files are named after their primary class/functionality
+- Each file typically exports a single class or module
+
+## Code Style Preferences
+- ES6+ JavaScript features
+- Async/await for asynchronous operations
+- Event emitters for component communication
+- Comprehensive error handling and logging
+- Clear separation of concerns between components
+
+## Integration Points
+- **Asterisk**: Via AudioSocket protocol and AMI
+- **ElevenLabs**: Via WebSocket API and REST API
+- **OSdial/Vicidial**: Via custom dialplan and agent configuration
+
+## Memory Bank Usage
+- The Memory Bank contains comprehensive documentation of the project
+- It should be updated when making significant changes
+- It serves as the primary knowledge repository for the project
+- Focus on keeping activeContext.md and progress.md up to date
